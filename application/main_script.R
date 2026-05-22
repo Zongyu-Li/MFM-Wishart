@@ -16,7 +16,7 @@ source(file.path(repo_root, "R", "07_sparsemixwishart.R"))
 ## ====================================
 ## 1) Import the data
 ## ====================================
-dir_csv <- "./data/processed_data"   
+dir_csv <- "./data/processed_data"   # put the preprocessed data here
 files <- list.files(dir_csv, pattern = "\\.csv$", full.names = TRUE)
 
 get_id <- function(f) as.integer(sub("\\.csv$", "", basename(f)))
@@ -67,7 +67,7 @@ nu_U <- 100
 
 GAMMA <- 1
 
-niterations = 10000
+niterations = 20000
 
 set.seed(123) 
 
@@ -82,7 +82,7 @@ T_MFM <- system.time({
     nu_L = nu_L,
     nu_U = nu_U,
     initNClusters = 99,
-    proposal_sd = 4.0,
+    proposal_sd = 3.0,
     lambda = 1,
     k_max = 500
   )
@@ -91,7 +91,7 @@ T_MFM <- system.time({
 ## ===========================================
 ## 4) Dahl's postprocessing for MFM-Wishart
 ## ===========================================
-burn <- 4000
+burn <- 8000
 dahl <- getDahl(MFM_fit, burn = burn)
 
 z_hat  <- dahl[[1]]
