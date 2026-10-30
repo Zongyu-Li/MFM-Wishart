@@ -10,14 +10,20 @@ MFM_Wishart_collapsed <- function(
     Psi0, kappa0,     # IW prior hyperparams
     nu_init, nu_L, nu_U,  # nu prior bounds + init
     initNClusters,    # Number of initial clusters
-    proposal_sd = 1,  # RW-MH sd for nu
-    lambda = 1,       # Poisson^+(lambda) for K
-    k_max = 500       # truncation for VN
+    proposal_sd = 1,  # RW-MH sd for each cluster-specific nu_c
+    lambda = 1,       # K - 1 ~ Poisson(lambda)
+    k_max = 500,      # truncation for VN
+    m_aux = 1         # number of Neal Algorithm 8 auxiliary nu values
 ){
   
   ## data: p x p x n array, each slice SPD
   n <- dim(data)[3]
   p <- nrow(data[,,1])
+  
+  if(m_aux < 1 || m_aux != as.integer(m_aux)){
+    stop("m_aux must be a positive integer.")
+  }
+  m_aux <- as.integer(m_aux)
   
   ## Precompute logdet(Wi)(for updating z and nu)
   logdetW <- rep(NA_real_, n)
@@ -28,7 +34,7 @@ MFM_Wishart_collapsed <- function(
   ## Precompute VN in the MFM prior (k truncated at a large integer)
   N <- n
   VN <- 0
-  tmax <- min(n + 10, k_max)  
+  tmax <- min(n + 10, k_max)
   VN <- rep(NA_real_, tmax)
   
   for (t in 1:tmax){
@@ -49,7 +55,7 @@ MFM_Wishart_collapsed <- function(
   
   ## for collapsed sampling
   ## For fast computation, we keep the sufficient stats in each cluster
-  ##                S_c = sum W_i,  A_c = sum log|W_i|
+  ##                S_c = sum W_i,  A_c = sum log|W_i|               ##
   clusterSizes <- table(as.factor(clusterAssign))
   nClusters <- length(clusterSizes)
   
@@ -61,7 +67,15 @@ MFM_Wishart_collapsed <- function(
     A[c] <- A[c] + logdetW[i]
   }
   
-  nu <- nu_init
+  ## A scalar nu_init is replicated; alternatively pass a vector of length initNClusters.
+  if(length(nu_init) == 1){
+    nu <- rep(nu_init, nClusters)
+  } else {
+    if(length(nu_init) != nClusters){
+      stop("nu_init must be a scalar or a vector of length initNClusters.")
+    }
+    nu <- nu_init
+  }
   
   History <- vector("list", niterations)
   
@@ -101,22 +115,34 @@ MFM_Wishart_collapsed <- function(
           }
           
           log_prior <- log(GAMMA + ni)
-          log_like  <- log_pred_existing(Wi, Si, ni, nu, Psi0, kappa0, logdetWi)
+          
+          ## use the candidate existing cluster's own nu_x.
+          log_like  <- log_pred_existing(Wi, Si, ni, nu[x],
+                                         Psi0, kappa0, logdetWi)
           log_prior + log_like
         })
         
-        ### new cluster
-        log_prior_new <- log(GAMMA) + (VN[nClusters+1] - VN[nClusters])
-        log_like_new  <- log_pred_new(Wi, nu, Psi0, kappa0, logdetWi)
-        log_clusterProbs[nClusters+1] <- log_prior_new + log_like_new
+        ### m auxiliary new-cluster candidates
+        aux_nu <- runif(m_aux, min = nu_L, max = nu_U)
+        log_prior_new <- log(GAMMA) +
+          (VN[nClusters+1] - VN[nClusters]) - log(m_aux)
         
-        ### sample
-        cluster.i <- sample(1:(nClusters+1), size=1,
-                            prob = exp(log_clusterProbs - sna::logSum(log_clusterProbs)))
+        log_like_new <- sapply(1:m_aux, function(r){
+          log_pred_new(Wi, aux_nu[r], Psi0, kappa0, logdetWi)
+        })
         
-        ### Update sufficient stats 
+        log_clusterProbs <- c(log_clusterProbs,
+                              log_prior_new + log_like_new)
+        
+        ### sample among nClusters existing clusters and m_aux auxiliaries
+        cluster.i <- sample(1:(nClusters+m_aux), size=1,
+                            prob = exp(log_clusterProbs -
+                                         sna::logSum(log_clusterProbs)))
+        
+        ### Update sufficient stats
         if(cluster.i == cur.cluster.i){
           #### stay: do nothing
+          
         } else if(cluster.i <= nClusters){
           #### move to existing
           Sarr[,,cur.cluster.i] <- Sarr[,,cur.cluster.i] - Wi
@@ -124,8 +150,12 @@ MFM_Wishart_collapsed <- function(
           Sarr[,,cluster.i] <- Sarr[,,cluster.i] + Wi
           A[cluster.i] <- A[cluster.i] + logdetWi
           clusterAssign[i] <- cluster.i
+          
         } else {
           #### open new cluster
+          #### retain the selected auxiliary nu as the new cluster's nu.
+          aux.index <- cluster.i - nClusters
+          
           Sarr[,,cur.cluster.i] <- Sarr[,,cur.cluster.i] - Wi
           A[cur.cluster.i] <- A[cur.cluster.i] - logdetWi
           
@@ -135,6 +165,7 @@ MFM_Wishart_collapsed <- function(
           Sarr <- Snew
           
           A <- c(A, logdetWi)
+          nu <- c(nu, aux_nu[aux.index]) 
           
           clusterAssign[i] <- nClusters + 1
         }
@@ -144,7 +175,7 @@ MFM_Wishart_collapsed <- function(
         
       } else {
         
-        ## i is a  singleton: |C_-i| = nClusters - 1
+        ## i is a singleton: |C_-i| = nClusters - 1
         ### existing clusters
         log_clusterProbs <- sapply(1:nClusters, function(x){
           
@@ -154,22 +185,47 @@ MFM_Wishart_collapsed <- function(
           Si <- Sarr[,,x]
           
           log_prior <- log(GAMMA + ni)
-          log_like  <- log_pred_existing(Wi, Si, ni, nu, Psi0, kappa0, logdetWi)
+          
+          ## use the candidate existing cluster's own nu_x.
+          log_like  <- log_pred_existing(Wi, Si, ni, nu[x],
+                                         Psi0, kappa0, logdetWi)
           log_prior + log_like
         })
         
-        ### new cluster
-        log_prior_new <- log(GAMMA) + (VN[nClusters] - VN[nClusters-1])
+        ### Neal Algorithm 8 singleton update.
+        ### The old singleton nu must be retained as one auxiliary candidate;
+        ### only the remaining m_aux - 1 values are newly sampled from H_nu.
+        aux_nu <- c(nu[cur.cluster.i],
+                    runif(m_aux - 1, min = nu_L, max = nu_U))
         
-        log_like_new  <- log_pred_new(Wi, nu, Psi0, kappa0, logdetWi)
-        log_clusterProbs[nClusters+1] <- log_prior_new + log_like_new
+        if(nClusters == 1){
+          ## Only relevant when n = 1. There are no existing alternatives,
+          ## so the common MFM new-cluster coefficient cancels.
+          log_prior_new <- -log(m_aux)
+        } else {
+          log_prior_new <- log(GAMMA) +
+            (VN[nClusters] - VN[nClusters-1]) - log(m_aux)
+        }
         
-        cluster.i <- sample(1:(nClusters+1), size=1,
-                            prob = exp(log_clusterProbs - sna::logSum(log_clusterProbs)))
+        log_like_new <- sapply(1:m_aux, function(r){
+          log_pred_new(Wi, aux_nu[r], Psi0, kappa0, logdetWi)
+        })
+        
+        log_clusterProbs <- c(log_clusterProbs,
+                              log_prior_new + log_like_new)
+        
+        cluster.i <- sample(1:(nClusters+m_aux), size=1,
+                            prob = exp(log_clusterProbs -
+                                         sna::logSum(log_clusterProbs)))
         
         if(cluster.i > nClusters){
-          #### stay alone: keep label cur.cluster.i, no stats change
+          #### remain a singleton, but possibly replace the old nu
+          #### by one of the fresh auxiliary values. If auxiliary 1 is chosen,
+          #### both the partition and nu remain unchanged.
+          aux.index <- cluster.i - nClusters
+          nu[cur.cluster.i] <- aux_nu[aux.index]
           clusterAssign[i] <- cur.cluster.i
+          
         } else {
           #### move i into existing cluster, then delete empty cur cluster and relabel
           #### update target stats first (indices are still old)
@@ -179,10 +235,12 @@ MFM_Wishart_collapsed <- function(
           ## drop cur.cluster.i slice from Sarr/A
           Sarr <- Sarr[,,-cur.cluster.i, drop=FALSE]
           A    <- A[-cur.cluster.i]
+          nu   <- nu[-cur.cluster.i] 
           
           ## relabel clusterAssign
           clusterAssign[i] <- cluster.i
-          clusterAssign <- ifelse(clusterAssign > cur.cluster.i, clusterAssign-1, clusterAssign)
+          clusterAssign <- ifelse(clusterAssign > cur.cluster.i,
+                                  clusterAssign-1, clusterAssign)
         }
         
         clusterSizes <- table(as.factor(clusterAssign))
@@ -190,25 +248,31 @@ MFM_Wishart_collapsed <- function(
       }
     } ## end i loop
     
-    ## ---- update nu by RW-MH (fully collapsed)
-    ## recompute nvec from current z (consistent with Sarr/A)
-    nvec <- as.numeric(table(factor(clusterAssign, levels=1:max(clusterAssign))))
-    nvec <- nvec[nvec > 0]  # occupied clusters
+    ## update each occupied cluster's nu_c separately by RW-MH,
+    ## with Sigma_c analytically integrated out.
+    nvec <- as.numeric(table(factor(clusterAssign,
+                                    levels=1:max(clusterAssign))))
+    nvec <- nvec[nvec > 0]
+    nClusters <- length(nvec)
     
-    nu_prop <- nu + rnorm(1, mean=0, sd=proposal_sd)
-    
-    if(nu_prop >= nu_L && nu_prop <= nu_U){
+    for(c in 1:nClusters){
+      nu_prop <- nu[c] + rnorm(1, mean=0, sd=proposal_sd)
       
-      log_old <- log_target_nu(nu,      Sarr, A, nvec, Psi0, kappa0)
-      log_new <- log_target_nu(nu_prop, Sarr, A, nvec, Psi0, kappa0)
-      
-      log_alpha <- log_new - log_old
-      if(log(runif(1)) < log_alpha){
-        nu <- nu_prop
-      }
-    }## else: reject automatically
+      if(nu_prop >= nu_L && nu_prop <= nu_U){
+        
+        log_old <- log_target_nu_cluster(nu[c], Sarr[,,c], A[c], nvec[c],
+                                         Psi0, kappa0)
+        log_new <- log_target_nu_cluster(nu_prop, Sarr[,,c], A[c], nvec[c],
+                                         Psi0, kappa0)
+        
+        log_alpha <- log_new - log_old
+        if(log(runif(1)) < log_alpha){
+          nu[c] <- nu_prop
+        }
+      }## else: reject
+    }
     
-    ## store
+    ## store the cluster-specific nu vector.
     History[[iter]] <- list(zout = clusterAssign, nuout = nu)
     
   } # end iter loop
@@ -225,12 +289,18 @@ DPM_Wishart_collapsed <- function(
     Psi0, kappa0,     # IW prior hyperparams
     nu_init, nu_L, nu_U,  # nu prior bounds + init
     initNClusters,   # number of initial clusters
-    proposal_sd = 1  # RW-MH sd for nu
+    proposal_sd = 1, # RW-MH sd for each cluster-specific nu_c
+    m_aux = 1        # number of Neal Algorithm 8 auxiliary nu values
 ){
   
   ## data: p x p x n array, each slice SPD
   n <- dim(data)[3]
   p <- nrow(data[,,1])
+  
+  if(m_aux < 1 || m_aux != as.integer(m_aux)){
+    stop("m_aux must be a positive integer.")
+  }
+  m_aux <- as.integer(m_aux)
   
   ## Precompute logdet(Wi)(for updating z and nu)
   logdetW <- rep(NA_real_, n)
@@ -256,7 +326,15 @@ DPM_Wishart_collapsed <- function(
     A[c] <- A[c] + logdetW[i]
   }
   
-  nu <- nu_init
+  ## A scalar nu_init is replicated; alternatively pass a vector of length initNClusters.
+  if(length(nu_init) == 1){
+    nu <- rep(nu_init, nClusters)
+  } else {
+    if(length(nu_init) != nClusters){
+      stop("nu_init must be a scalar or a vector of length initNClusters.")
+    }
+    nu <- nu_init
+  }
   
   History <- vector("list", niterations)
   
@@ -296,22 +374,33 @@ DPM_Wishart_collapsed <- function(
           }
           
           log_prior <- log(ni)
-          log_like  <- log_pred_existing(Wi, Si, ni, nu, Psi0, kappa0, logdetWi)
+          
+          ## use the candidate existing cluster's own nu_x.
+          log_like  <- log_pred_existing(Wi, Si, ni, nu[x],
+                                         Psi0, kappa0, logdetWi)
           log_prior + log_like
         })
         
-        ### new cluster
-        log_prior_new <- log(GAMMA)
-        log_like_new  <- log_pred_new(Wi, nu, Psi0, kappa0, logdetWi)
-        log_clusterProbs[nClusters+1] <- log_prior_new + log_like_new
+        ### m auxiliary new-cluster candidates
+        aux_nu <- runif(m_aux, min = nu_L, max = nu_U)
+        log_prior_new <- log(GAMMA) - log(m_aux)
         
-        ## sample
-        cluster.i <- sample(1:(nClusters+1), size=1,
-                            prob = exp(log_clusterProbs - sna::logSum(log_clusterProbs)))
+        log_like_new <- sapply(1:m_aux, function(r){
+          log_pred_new(Wi, aux_nu[r], Psi0, kappa0, logdetWi)
+        })
+        
+        log_clusterProbs <- c(log_clusterProbs,
+                              log_prior_new + log_like_new)
+        
+        ## sample among nClusters existing clusters and m_aux auxiliaries
+        cluster.i <- sample(1:(nClusters+m_aux), size=1,
+                            prob = exp(log_clusterProbs -
+                                         sna::logSum(log_clusterProbs)))
         
         ## update sufficient stats
         if(cluster.i == cur.cluster.i){
           ### stay: do nothing
+          
         } else if(cluster.i <= nClusters){
           ### move to existing
           Sarr[,,cur.cluster.i] <- Sarr[,,cur.cluster.i] - Wi
@@ -319,8 +408,12 @@ DPM_Wishart_collapsed <- function(
           Sarr[,,cluster.i] <- Sarr[,,cluster.i] + Wi
           A[cluster.i] <- A[cluster.i] + logdetWi
           clusterAssign[i] <- cluster.i
+          
         } else {
           ### open new cluster
+          ### retain the selected auxiliary nu as the new cluster's nu.
+          aux.index <- cluster.i - nClusters
+          
           Sarr[,,cur.cluster.i] <- Sarr[,,cur.cluster.i] - Wi
           A[cur.cluster.i] <- A[cur.cluster.i] - logdetWi
           
@@ -330,6 +423,7 @@ DPM_Wishart_collapsed <- function(
           Sarr <- Snew
           
           A <- c(A, logdetWi)
+          nu <- c(nu, aux_nu[aux.index])
           
           clusterAssign[i] <- nClusters + 1
         }
@@ -339,7 +433,7 @@ DPM_Wishart_collapsed <- function(
         
       } else {
         
-        ## i is a  singleton: |C_-i| = nClusters - 1
+        ## i is a singleton: |C_-i| = nClusters - 1
         ### existing clusters
         log_clusterProbs <- sapply(1:nClusters, function(x){
           
@@ -349,23 +443,41 @@ DPM_Wishart_collapsed <- function(
           Si <- Sarr[,,x]
           
           log_prior <- log(ni)
-          log_like  <- log_pred_existing(Wi, Si, ni, nu, Psi0, kappa0, logdetWi)
+          
+          ## use the candidate existing cluster's own nu_x.
+          log_like  <- log_pred_existing(Wi, Si, ni, nu[x],
+                                         Psi0, kappa0, logdetWi)
           log_prior + log_like
         })
         
         
-        ### new cluster
-        log_prior_new <- log(GAMMA)
+        ### Neal Algorithm 8 singleton update.
+        ### The old singleton nu must be retained as one auxiliary candidate;
+        ### only the remaining m_aux - 1 values are newly sampled from H_nu.
+        aux_nu <- c(nu[cur.cluster.i],
+                    runif(m_aux - 1, min = nu_L, max = nu_U))
         
-        log_like_new  <- log_pred_new(Wi, nu, Psi0, kappa0, logdetWi)
-        log_clusterProbs[nClusters+1] <- log_prior_new + log_like_new
+        log_prior_new <- log(GAMMA) - log(m_aux)
         
-        cluster.i <- sample(1:(nClusters+1), size=1,
-                            prob = exp(log_clusterProbs - sna::logSum(log_clusterProbs)))
+        log_like_new <- sapply(1:m_aux, function(r){
+          log_pred_new(Wi, aux_nu[r], Psi0, kappa0, logdetWi)
+        })
+        
+        log_clusterProbs <- c(log_clusterProbs,
+                              log_prior_new + log_like_new)
+        
+        cluster.i <- sample(1:(nClusters+m_aux), size=1,
+                            prob = exp(log_clusterProbs -
+                                         sna::logSum(log_clusterProbs)))
         
         if(cluster.i > nClusters){
-          ## stay alone: keep label cur.cluster.i, no stats change
+          ## remain a singleton, but possibly replace the old nu
+          ## by one of the fresh auxiliary values. If auxiliary 1 is chosen,
+          ## both the partition and nu remain unchanged.
+          aux.index <- cluster.i - nClusters
+          nu[cur.cluster.i] <- aux_nu[aux.index]
           clusterAssign[i] <- cur.cluster.i
+          
         } else {
           ## move i into existing cluster, then delete empty cur cluster and relabel
           ## update target stats first (indices are still old)
@@ -375,10 +487,12 @@ DPM_Wishart_collapsed <- function(
           ## drop cur.cluster.i slice from Sarr/A
           Sarr <- Sarr[,,-cur.cluster.i, drop=FALSE]
           A    <- A[-cur.cluster.i]
+          nu   <- nu[-cur.cluster.i]  
           
-          ## relabel clusterAssign 
+          ## relabel clusterAssign
           clusterAssign[i] <- cluster.i
-          clusterAssign <- ifelse(clusterAssign > cur.cluster.i, clusterAssign-1, clusterAssign)
+          clusterAssign <- ifelse(clusterAssign > cur.cluster.i,
+                                  clusterAssign-1, clusterAssign)
         }
         
         clusterSizes <- table(as.factor(clusterAssign))
@@ -386,25 +500,31 @@ DPM_Wishart_collapsed <- function(
       }
     } # end i loop
     
-    ## ---- update nu by RW-MH (fully collapsed)
-    ## recompute nvec from current z (consistent with Sarr/A)
-    nvec <- as.numeric(table(factor(clusterAssign, levels=1:max(clusterAssign))))
-    nvec <- nvec[nvec > 0]  # occupied clusters
+    ## update each occupied cluster's nu_c separately by RW-MH,
+    ## with Sigma_c analytically integrated out.
+    nvec <- as.numeric(table(factor(clusterAssign,
+                                    levels=1:max(clusterAssign))))
+    nvec <- nvec[nvec > 0]
+    nClusters <- length(nvec)
     
-    nu_prop <- nu + rnorm(1, mean=0, sd=proposal_sd)
-    
-    if(nu_prop >= nu_L && nu_prop <= nu_U){
+    for(c in 1:nClusters){
+      nu_prop <- nu[c] + rnorm(1, mean=0, sd=proposal_sd)
       
-      log_old <- log_target_nu(nu,      Sarr, A, nvec, Psi0, kappa0)
-      log_new <- log_target_nu(nu_prop, Sarr, A, nvec, Psi0, kappa0)
-      
-      log_alpha <- log_new - log_old
-      if(log(runif(1)) < log_alpha){
-        nu <- nu_prop
-      }
-    }## else: reject automatically
+      if(nu_prop >= nu_L && nu_prop <= nu_U){
+        
+        log_old <- log_target_nu_cluster(nu[c], Sarr[,,c], A[c], nvec[c],
+                                         Psi0, kappa0)
+        log_new <- log_target_nu_cluster(nu_prop, Sarr[,,c], A[c], nvec[c],
+                                         Psi0, kappa0)
+        
+        log_alpha <- log_new - log_old
+        if(log(runif(1)) < log_alpha){
+          nu[c] <- nu_prop
+        }
+      }## else: reject
+    }
     
-    ## store
+    ## store the cluster-specific nu vector.
     History[[iter]] <- list(zout = clusterAssign, nuout = nu)
     
   } # end iter loop

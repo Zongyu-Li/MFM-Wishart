@@ -14,7 +14,7 @@ log_pred_existing <- function(Wi, Si, ni, nu, Psi0, kappa0, logdetWi){
 }
 
 log_pred_new <- function(Wi, nu, Psi0, kappa0, logdetWi){
-  ## m(Wi|nu) = prior predictive (new cluster)
+  ## m(Wi|nu) = prior predictive (new cluster), with Sigma integrated out
   p <- nrow(Wi)
   out <- ( log_multigamma((nu + kappa0)/2, p)
            - log_multigamma(nu/2, p)
@@ -27,19 +27,12 @@ log_pred_new <- function(Wi, nu, Psi0, kappa0, logdetWi){
 
 
 
-log_target_nu <- function(nu, Sarr, A, nvec, Psi0, kappa0){ 
-  #fully-collapsed nu: log target
-  p <- dim(Sarr)[1]
-  K <- length(nvec)
-  out <- 0
-  for(c in 1:K){
-    nc <- nvec[c]
-    Sc <- Sarr[,,c]
-    out <- out +
-      log_multigamma((kappa0 + nc*nu)/2, p) -
-      nc * log_multigamma(nu/2, p) +
-      ((nu - p - 1)/2) * A[c] -
-      ((kappa0 + nc*nu)/2) * logdet_spd(Psi0 + Sc)
-  }
+## The collapsed log target for one occupied cluster's nu_c.
+log_target_nu_cluster <- function(nu, Sc, Ac, nc, Psi0, kappa0){
+  p <- nrow(Sc)
+  out <- ( log_multigamma((kappa0 + nc*nu)/2, p)
+           - nc * log_multigamma(nu/2, p)
+           + ((nu - p - 1)/2) * Ac
+           - ((kappa0 + nc*nu)/2) * logdet_spd(Psi0 + Sc) )
   out
 }

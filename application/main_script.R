@@ -10,8 +10,6 @@ source(file.path(repo_root, "R", "02_numeric_utils.R"))
 source(file.path(repo_root, "R", "03_collapsed_predictive.R"))
 source(file.path(repo_root, "R", "04_collapsed_samplers.R"))
 source(file.path(repo_root, "R", "05_distance_clustering.R"))
-source(file.path(repo_root, "R", "06_sparsemixwishart_helpers.R"))
-source(file.path(repo_root, "R", "07_sparsemixwishart.R"))
 
 ## ====================================
 ## 1) Import the data
@@ -53,7 +51,6 @@ library(sna)
 library(MCMCpack) 
 library(mclust) 
 library(cluster)
-library(sparsemixwishart)
 
 
 p <- 7
@@ -67,10 +64,11 @@ nu_U <- 100
 
 GAMMA <- 1
 
-niterations = 20000
+niterations = 10000
 
-set.seed(123) 
+set.seed(123)
 
+## MFM time
 T_MFM <- system.time({
   MFM_fit <- MFM_Wishart_collapsed(
     data = data,
@@ -82,7 +80,7 @@ T_MFM <- system.time({
     nu_L = nu_L,
     nu_U = nu_U,
     initNClusters = 99,
-    proposal_sd = 3.0,
+    proposal_sd = 4.0,
     lambda = 1,
     k_max = 500
   )
@@ -91,7 +89,7 @@ T_MFM <- system.time({
 ## ===========================================
 ## 4) Dahl's postprocessing for MFM-Wishart
 ## ===========================================
-burn <- 8000
+burn <- 4000
 dahl <- getDahl(MFM_fit, burn = burn)
 
 z_hat  <- dahl[[1]]
@@ -100,6 +98,7 @@ nu_hat <- dahl[[2]]
 K_MFM <- length(unique(z_hat))
 K_MFM
 z_hat
+#P_MFM <- mean(K_trace[(burn+1):niterations]==3)
 
 ## ===========================================
 ## 5) Summary and Plots

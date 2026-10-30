@@ -10,9 +10,16 @@ getDahl <- function(fit, burn){
   ##        burn = the number of burn-in iterations                           ##
   ## Output:                                                                  ##
   ##        zout  = estimated clustering configuration, a n by 1 vector       ##
-  ##        nuout = estimated shared degrees of freedom, a scalar             ##
+  ##        nuout = cluster-specific degrees of freedom from the same Dahl    ##
+  ##                representative draw; a vector indexed by cluster labels   ##
   ##############################################################################
-  iters <- fit$Iterates[-(1:burn)]
+  
+  if(burn == 0){
+    iters <- fit$Iterates
+  } else {
+    iters <- fit$Iterates[-(1:burn)]
+  }
+  
   n <- length(iters[[1]][[1]])
   niters <- length(iters)
   membershipMatrices <- lapply(iters, function(x){
@@ -28,3 +35,4 @@ getDahl <- function(fit, burn){
   attr(DahlAns, "burnin") <- burn
   DahlAns
 }
+
