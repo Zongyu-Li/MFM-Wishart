@@ -80,9 +80,10 @@ T_MFM <- system.time({
     nu_L = nu_L,
     nu_U = nu_U,
     initNClusters = 99,
-    proposal_sd = 4.0,
+    proposal_sd = 1,
     lambda = 1,
-    k_max = 500
+    k_max = 500,
+    m = 10
   )
 })
 

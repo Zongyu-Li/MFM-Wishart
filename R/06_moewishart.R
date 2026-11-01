@@ -10,6 +10,7 @@ fit_moewishart_bic <- function(
     z_true = NULL
 ) {
   
+  n <- dim(data)[3L] 
   S_list <- asplit(data, 3L)
   
   fits <- lapply(K, function(k) {
